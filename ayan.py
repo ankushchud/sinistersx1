@@ -1,27 +1,16 @@
-﻿import json, os, threading, time, collections, random, uuid, urllib.request, urllib.parse, smtplib, secrets
+import json, os, threading, time, collections, random, uuid, urllib.request, urllib.parse
 from flask import Flask, request, jsonify, session, redirect, url_for, render_template_string
 import logging
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
-from email.message import EmailMessage
 from instagrapi import Client
-import resend
-from dotenv import load_dotenv
-
-load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("PANEL_SECRET_KEY", "SINISTERS-SX7-PANEL-SECRET")
 
 PANEL_USERNAME = "SINISTERS"
 PANEL_PASSWORD = "AYAN@2003"
-# Email OTP registration settings
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-RESEND_FROM = os.environ.get("RESEND_FROM", "onboarding@resend.dev")
-OTP_EXPIRY_SECONDS = int(os.environ.get("OTP_EXPIRY_SECONDS", "600"))
-OTP_RESEND_SECONDS = int(os.environ.get("OTP_RESEND_SECONDS", "60"))
-otp_lock = threading.Lock()
-pending_registrations = {}
+REGISTRATION_MASTER_KEY = "62077"
 
 def login_required(view):
     @wraps(view)
@@ -47,243 +36,63 @@ LOGIN_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>SINISTERS SX7 • Login</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Orbitron:wght@500;600;700;800;900&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;min-height:100%;overflow-x:hidden;overflow-y:auto;scroll-behavior:smooth;background:#000;color:#fff;font-family:Inter,Arial,sans-serif}
-body{scroll-snap-type:y proximity}
-.page{width:100%;min-height:200vh;position:relative;background:#000}
-.hero{min-height:100vh;height:100vh;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#000;scroll-snap-align:start}
-#shader-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;background:#000}
-.shader-overlay{position:absolute;inset:0;z-index:1;pointer-events:none;background:radial-gradient(circle at center,transparent 0%,rgba(0,0,0,.12) 48%,rgba(0,0,0,.72) 100%),linear-gradient(180deg,rgba(0,0,0,.05),rgba(0,0,0,.45))}
-.welcome-content{position:relative;z-index:5;width:min(1100px,92vw);text-align:center;display:flex;flex-direction:column;align-items:center;pointer-events:none;transform:translateY(-2vh)}
-.welcome-kicker{font-family:'Orbitron',sans-serif;font-size:clamp(9px,1.3vw,13px);letter-spacing:6px;color:rgba(255,255,255,.64);margin-bottom:24px;text-shadow:0 0 18px rgba(255,255,255,.45)}
-.welcome-content h1{font-family:'Orbitron',sans-serif;font-size:clamp(34px,6vw,82px);line-height:1.08;font-weight:900;letter-spacing:2px;color:#fff;text-shadow:0 0 12px rgba(255,255,255,.75),0 0 35px rgba(255,255,255,.3),0 0 75px rgba(255,255,255,.12)}
-.welcome-content h1 span{color:#d9d9d9}
-.welcome-content p{margin-top:20px;font-family:'Orbitron',sans-serif;font-size:11px;letter-spacing:7px;color:rgba(255,255,255,.45)}
-.scroll-down{position:absolute;z-index:8;bottom:28px;left:50%;transform:translateX(-50%);border:0;background:transparent;color:#fff;display:flex;flex-direction:column;align-items:center;gap:8px;cursor:pointer;font-family:'Orbitron',sans-serif;letter-spacing:4px;font-size:9px;opacity:.7;animation:scrollPulse 1.8s ease-in-out infinite}
-.scroll-down b{font-family:Inter,sans-serif;font-size:22px;line-height:1;font-weight:300}
-@keyframes scrollPulse{0%,100%{opacity:.45;transform:translateX(-50%) translateY(0)}50%{opacity:1;transform:translateX(-50%) translateY(7px)}}
-.login-screen{min-height:100vh;position:relative;display:flex;align-items:center;justify-content:center;padding:70px 20px;background:#000;scroll-snap-align:start;overflow:hidden}
-.login-screen:before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at 50% 35%,rgba(35,35,35,.16),transparent 38%),#000}
-.login-wrap{position:relative;z-index:5;width:min(390px,88vw);display:flex;flex-direction:column;align-items:center}
-.moon-login{width:min(430px,92vw);height:245px;position:relative;margin:0 auto 4px;display:flex;align-items:center;justify-content:center;z-index:6;pointer-events:auto;overflow:visible}
-#moon-canvas{width:100%;height:100%;display:block}
-.moon-glow{position:absolute;width:145px;height:145px;border-radius:50%;background:radial-gradient(circle,rgba(190,210,235,.12),transparent 68%);filter:blur(14px);pointer-events:none}
-.logo{font-family:'Orbitron',sans-serif;font-size:clamp(34px,7vw,58px);font-weight:900;letter-spacing:-2px;line-height:1;color:#fff;text-align:center;text-shadow:0 0 10px rgba(255,255,255,.65),0 0 30px rgba(255,255,255,.22);margin-bottom:28px;user-select:none}
-.logo span{color:#cfcfcf}
-.auth-card{width:100%;padding:28px;border:1px solid rgba(255,255,255,.16);border-radius:22px;background:rgba(5,5,8,.42);box-shadow:0 25px 90px rgba(0,0,0,.75),inset 0 1px 0 rgba(255,255,255,.06);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
-.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;padding:5px;margin-bottom:25px;border:1px solid rgba(255,255,255,.12);border-radius:13px;background:rgba(255,255,255,.035)}
-.tab{border:0;background:transparent;color:rgba(255,255,255,.45);padding:11px 5px;border-radius:9px;cursor:pointer;font-size:11px;font-weight:800;letter-spacing:2px;transition:.2s}
-.tab:hover{color:#fff}.tab.active{color:#fff;background:rgba(255,255,255,.11);text-shadow:0 0 12px rgba(255,255,255,.7)}
-.form{display:none}.form.active{display:block}.field{margin-top:13px}
-label{display:block;margin:0 0 8px 2px;color:rgba(255,255,255,.7);font-size:10px;text-transform:uppercase;letter-spacing:2px;font-weight:700}
-input{width:100%;height:52px;padding:0 16px;border:1px solid rgba(255,255,255,.28);border-radius:10px;background:rgba(0,0,0,.38);color:#fff;outline:none;font-size:13px;box-shadow:inset 0 0 20px rgba(0,0,0,.18);transition:.2s}
-input::placeholder{color:rgba(255,255,255,.28)}input:focus{border-color:rgba(255,255,255,.8);box-shadow:0 0 0 2px rgba(255,255,255,.08),0 0 25px rgba(255,255,255,.08)}
-.action{width:100%;height:52px;margin-top:20px;border:1px solid rgba(255,255,255,.55);border-radius:10px;background:rgba(255,255,255,.08);color:#fff;font-weight:800;letter-spacing:2px;font-size:11px;cursor:pointer;transition:.2s;backdrop-filter:blur(5px)}
-.action:hover{background:rgba(255,255,255,.17);border-color:#fff;box-shadow:0 0 28px rgba(255,255,255,.14);transform:translateY(-1px)}
-.hint{text-align:center;color:rgba(255,255,255,.45);font-size:9px;margin-top:13px;line-height:1.5;letter-spacing:1px}
-.error{min-height:18px;margin-top:13px;text-align:center;color:#ff8585;font-size:10px}
-@media(max-width:600px){.welcome-content h1{font-size:clamp(30px,9vw,48px);letter-spacing:1px}.welcome-kicker{letter-spacing:3px}.welcome-content p{letter-spacing:4px}.moon-login{height:210px;margin-bottom:0}.login-wrap{width:min(340px,84vw)}.auth-card{padding:20px;border-radius:18px}.tabs{gap:3px}}
-
-/* LIQUID GLASS + ATC SHADER BACKDROP */
-#atc-background{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block;background:#000;pointer-events:none}
-#atc-glass-tint{position:fixed;inset:0;z-index:1;pointer-events:none;background:radial-gradient(circle at 50% 0%,rgba(255,255,255,.08),transparent 35%),linear-gradient(180deg,rgba(0,0,0,.12),rgba(0,0,0,.48))}
-.shell{position:relative;z-index:2}
-.sidebar,.topbar,.panel,.stat-card,.acc-card,.tg-card,.tg-bot,.mini-panel,.modal,.modal-overlay,.gc-picker,.form-section,.log-panel,.empty,.search,.btn,.system-pill,.acc-header,.stats-row,.gc-row,.info-row,.last-action,.tg-frame-wrap,.portal-card,.section,.contact{
-background:linear-gradient(135deg,rgba(255,255,255,.105),rgba(255,255,255,.035))!important;
-border:1px solid rgba(255,255,255,.16)!important;
-box-shadow:0 20px 55px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(255,255,255,.035)!important;
-backdrop-filter:blur(22px) saturate(135%)!important;-webkit-backdrop-filter:blur(22px) saturate(135%)!important;
-}
-body{background:#000!important}
-.sidebar{background:linear-gradient(180deg,rgba(10,10,14,.70),rgba(5,5,8,.42))!important}
-.topbar{background:rgba(8,8,12,.40)!important}
-.stat-card,.acc-card,.tg-card,.tg-bot,.mini-panel,.modal{border-radius:20px!important}
-.acc-card:hover,.tg-bot:hover,.stat-card:hover{border-color:rgba(255,255,255,.30)!important;transform:translateY(-2px);box-shadow:0 25px 65px rgba(0,0,0,.38),inset 0 1px 0 rgba(255,255,255,.18)!important}
-.acc-header{background:rgba(255,255,255,.045)!important}
-input,textarea,select,.search{background:rgba(0,0,0,.28)!important;border-color:rgba(255,255,255,.17)!important;backdrop-filter:blur(16px)!important}
-input:focus,textarea:focus,select:focus{border-color:rgba(255,255,255,.55)!important;box-shadow:0 0 0 3px rgba(255,255,255,.06),0 0 30px rgba(255,255,255,.05)!important}
-.btn{background:rgba(255,255,255,.055)!important;color:#f5f5f5!important}
-.btn:hover{background:rgba(255,255,255,.12)!important;border-color:rgba(255,255,255,.38)!important}
-.btn-add,.btn-save{background:linear-gradient(135deg,rgba(255,255,255,.20),rgba(255,255,255,.07))!important;border-color:rgba(255,255,255,.42)!important}
-.nav-item.active,.nav-item:hover{background:rgba(255,255,255,.10)!important;border-color:rgba(255,255,255,.20)!important}
-.log-panel{background:rgba(0,0,0,.24)!important}
-.modal-overlay{background:rgba(0,0,0,.58)!important}
-</style>
+body{min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 20% 10%,#7c17351c,transparent 35%),radial-gradient(circle at 90% 90%,#c5a46a12,transparent 35%),#08090c;color:#eee7da;font-family:Inter,Arial,sans-serif}
+.card{width:min(440px,94vw);padding:34px;border:1px solid #403b39;border-radius:24px;background:linear-gradient(145deg,#15161a,#0d0e11);box-shadow:0 30px 100px #000b}
+.brand{text-align:center;margin-bottom:28px}.mark{width:62px;height:62px;margin:0 auto 15px;border:1px solid #c7a86b;border-radius:18px;display:grid;place-items:center;font-size:27px;background:linear-gradient(145deg,#292b30,#111318);box-shadow:0 10px 35px #000}
+h1{font:700 25px 'Playfair Display',serif;letter-spacing:2px}h1 span{color:#c9aa6d}p{margin-top:6px;color:#8f969e;font-size:11px;letter-spacing:2px}
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:24px 0 18px}.tab{border:1px solid #35383d;background:#101216;color:#9da3aa;border-radius:10px;padding:11px 5px;cursor:pointer;font-size:10px;font-weight:700;letter-spacing:1px}.tab.active{color:#f2dfb8;border-color:#9b7a43;background:linear-gradient(135deg,#64142b,#29161d)}
+.form{display:none}.form.active{display:block}.field{margin-top:13px}label{display:block;margin-bottom:7px;color:#858c94;font-size:9px;text-transform:uppercase;letter-spacing:1.5px}input{width:100%;padding:13px 14px;border:1px solid #30343a;border-radius:10px;background:#090b0e;color:#eee;outline:none;font-size:12px}input:focus{border-color:#a8874e;box-shadow:0 0 0 3px #a8874e12}
+.action{width:100%;margin-top:18px;padding:13px;border:1px solid #c4a267;border-radius:10px;background:linear-gradient(135deg,#74142f,#9b1c40);color:white;font-weight:800;letter-spacing:1px;cursor:pointer}.hint{text-align:center;color:#707780;font-size:9px;margin-top:12px;line-height:1.5}.error{min-height:18px;margin-top:12px;text-align:center;color:#ef7474;font-size:10px}
+.admin-user-row{cursor:default!important}.admin-user-row:hover{transform:none!important}.admin-user-actions{display:flex;gap:8px;align-items:center;margin-left:auto;position:relative;z-index:10}.admin-user-actions .manage-btn{cursor:pointer;pointer-events:auto;position:relative;z-index:11}</style>
 </head>
 <body>
-<canvas id="atc-background" aria-hidden="true"></canvas><div id="atc-glass-tint" aria-hidden="true"></div>
+<div class="card">
+  <div class="brand"><div class="mark">⚡</div><h1>SINISTERS <span>SX7</span></h1><p>SX7 PORTAL</p></div>
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('user',this)">USER</button>
+    <button class="tab" onclick="showTab('register',this)">REGISTER</button>
+    <button class="tab" onclick="showTab('admin',this)">ADMIN</button>
+  </div>
 
-<div class="page">
-<section class="hero" id="welcome">
-<canvas id="shader-canvas"></canvas>
-<div class="shader-overlay"></div>
-<div class="welcome-content">
-<div class="welcome-kicker">✦ ENTER THE EXPERIENCE ✦</div>
-<h1>WELCOME TO<br><span>SINISTERS SX7</span><br>PANEL</h1>
-<p>YOUR CONTROL CENTER</p>
-</div>
-<button class="scroll-down" type="button" onclick="document.getElementById('login').scrollIntoView({behavior:'smooth',block:'start'})"><span>SCROLL DOWN</span><b>↓</b></button>
-</section>
-<section class="login-screen" id="login">
-<div class="login-wrap">
-<div class="moon-login" aria-label="Interactive lunar display"><div class="moon-glow"></div><canvas id="moon-canvas"></canvas></div>
-<div class="logo">SINISTERS <span>SX7</span></div>
-<div class="auth-card">
-<div class="tabs">
-<button class="tab active" onclick="showTab('user',this)">USER</button>
-<button class="tab" onclick="showTab('register',this)">REGISTER</button>
-<button class="tab" onclick="showTab('admin',this)">ADMIN</button>
-</div>
-<form class="form active" id="user" method="POST" action="/login">
-<input type="hidden" name="mode" value="user"/>
-<div class="field"><label>USER</label><input name="username" autocomplete="username" placeholder="Enter username" required autofocus></div>
-<div class="field"><label>PASS</label><input type="password" name="password" autocomplete="current-password" placeholder="Enter password" required></div>
-<button class="action">ENTER PANEL</button>
-</form>
-<form class="form" id="register" onsubmit="return false;">
- <div class="field"><label>USER</label><input id="reg-username" name="username" minlength="3" maxlength="32" placeholder="Choose username" autocomplete="username" required></div>
- <div class="field"><label>PASS</label><input id="reg-password" type="password" name="password" minlength="6" placeholder="Choose password" autocomplete="new-password" required></div>
- <div class="field"><label>EMAIL</label><input id="reg-email" type="email" name="email" placeholder="Your email address" autocomplete="email" required></div>
- <div class="field" id="otp-field" style="display:none"><label>EMAIL OTP</label><input id="reg-otp" name="otp" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" placeholder="Enter 6-digit OTP" autocomplete="one-time-code"></div>
- <button class="action" id="send-otp-btn" type="button" onclick="sendRegistrationOTP()">SEND OTP</button>
- <button class="action" id="verify-otp-btn" type="button" onclick="verifyRegistrationOTP()" style="display:none">VERIFY &amp; CREATE ACCOUNT</button>
- <div class="hint" id="register-hint">A 6-digit OTP will be sent to your email.</div><div class="hint">CONTACT TG : @ayansx1</div>
- </form>
-<form class="form" id="admin" method="POST" action="/login">
-<input type="hidden" name="mode" value="admin"/>
-<div class="field"><label>USER</label><input name="username" autocomplete="username" placeholder="Admin username" required></div>
-<div class="field"><label>PASS</label><input type="password" name="password" autocomplete="current-password" placeholder="Admin password" required></div>
-<button class="action">ADMIN LOGIN</button><div class="hint">CONTACT TG : @ayansx1</div>
-</form>
-<div class="error">{{ error }}</div>
-</div></div>
-</section>
+  <form class="form active" id="user" method="POST" action="/login">
+    <input type="hidden" name="mode" value="user"/>
+    <div class="field"><label>Username</label><input name="username" autocomplete="username" required autofocus></div>
+    <div class="field"><label>Password</label><input type="password" name="password" autocomplete="current-password" required></div>
+    <button class="action">ENTER PANEL</button>
+  </form>
+
+  <form class="form" id="register" method="POST" action="/register">
+    <div class="field"><label>Username</label><input name="username" minlength="3" maxlength="32" required></div>
+    <div class="field"><label>Password</label><input type="password" name="password" minlength="6" required></div>
+    <div class="field"><label>Master Key</label><input type="password" name="masterkey" required></div>
+    <button class="action">CREATE ACCOUNT</button>
+    <div class="hint">CONTACT TG : @ayansx1 </div>
+  </form>
+
+  <form class="form" id="admin" method="POST" action="/login">
+    <input type="hidden" name="mode" value="admin"/>
+    <div class="field"><label>Admin Username</label><input name="username" autocomplete="username" required></div>
+    <div class="field"><label>Admin Password</label><input type="password" name="password" autocomplete="current-password" required></div>
+    <button class="action">ADMIN LOGIN</button>
+    <div class="hint">CONTACT TG : @ayansx1 </div>
+  </form>
+  <div class="error">{{ error }}</div>
 </div>
 <script>
- function showTab(id,btn){
+function showTab(id,btn){
  document.querySelectorAll('.form').forEach(x=>x.classList.remove('active'));
- document.getElementById(id).classList.add('active');
  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
- btn.classList.add('active');
- }
- async function sendRegistrationOTP(){
-   const username=document.getElementById('reg-username').value.trim(), password=document.getElementById('reg-password').value, email=document.getElementById('reg-email').value.trim();
-   const hint=document.getElementById('register-hint'), btn=document.getElementById('send-otp-btn');
-   if(!username||!password||!email){hint.textContent='Username, password and email are required.';return;}
-   btn.disabled=true;btn.textContent='SENDING OTP...';
-   try{
-     const r=await fetch('/register/request-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password,email})});
-     const data=await r.json();
-     if(data.success){
-       document.getElementById('otp-field').style.display='block';
-       document.getElementById('verify-otp-btn').style.display='block';
-       btn.style.display='none';hint.textContent='OTP sent. Check your email. It expires in 10 minutes.';
-       document.getElementById('reg-otp').focus();
-     }else{hint.textContent=data.error||'Could not send OTP.';btn.disabled=false;btn.textContent='SEND OTP';}
-   }catch(e){hint.textContent='Network error. Please try again.';btn.disabled=false;btn.textContent='SEND OTP';}
- }
- async function verifyRegistrationOTP(){
-   const otp=document.getElementById('reg-otp').value.trim(), hint=document.getElementById('register-hint'), btn=document.getElementById('verify-otp-btn');
-   if(!/^\d{6}$/.test(otp)){hint.textContent='Enter the 6-digit OTP from your email.';return;}
-   btn.disabled=true;btn.textContent='VERIFYING...';
-   try{
-     const r=await fetch('/register/verify-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({otp})});
-     const data=await r.json();
-     if(data.success){hint.textContent='Registration successful. You can now log in.';setTimeout(()=>{showTab('user',document.querySelector('.tab'));},700);}
-     else{hint.textContent=data.error||'Invalid OTP.';btn.disabled=false;btn.textContent='VERIFY & CREATE ACCOUNT';}
-   }catch(e){hint.textContent='Network error. Please try again.';btn.disabled=false;btn.textContent='VERIFY & CREATE ACCOUNT';}
- }
- </script>
-<script>
-/* Starship shader — standalone WebGL2 adaptation of the supplied React component. */
-(function(){
-const canvas=document.getElementById('shader-canvas'); if(!canvas)return;
-const gl=canvas.getContext('webgl2',{premultipliedAlpha:false,antialias:false}); if(!gl)return;
-const vertSrc=`#version 300 es
-precision highp float;
-layout(location=0) in vec2 a_pos;
-void main(){gl_Position=vec4(a_pos,0.0,1.0);}`;
-const fragSrc=`#version 300 es
-precision highp float;
-out vec4 fragColor;
-uniform vec2 iResolution;
-uniform float iTime;
-uniform sampler2D iChannel0;
-vec4 O_color;
-void mainImage(out vec4 O, vec2 I){
-vec2 r=iResolution.xy,p=(I+I-r)/r.y*mat2(3.,4.,4.,-3.)/1e2;
-vec4 S=vec4(0.0),C=vec4(1.,2.,3.,0.),W;
-for(float t=iTime,T=.1*t+p.y,i=0.;i<50.;i+=1.){
-S+=(cos(W=sin(i)*C)+1.)*exp(sin(i+i*T))/length(max(p,p/vec2(2.0,texture(iChannel0,p/exp(W.x)+vec2(i,t)/8.).r*40.)))/1e4;
-p+=.02*cos(i*(C.xz+8.0+i)+T+T);
+ document.getElementById(id).classList.add('active'); btn.classList.add('active');
 }
-O=vec4(tanh((S*S).rgb),1.0);
-}
-void main(){vec4 O;mainImage(O,gl_FragCoord.xy);fragColor=O;}`;
-function compile(type,src){const sh=gl.createShader(type);gl.shaderSource(sh,src);gl.compileShader(sh);if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(sh)||'compile error');return sh}
-const prog=gl.createProgram();gl.attachShader(prog,compile(gl.VERTEX_SHADER,vertSrc));gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,fragSrc));gl.linkProgram(prog);if(!gl.getProgramParameter(prog,gl.LINK_STATUS))return;
-gl.useProgram(prog);
-const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
-const tw=256,th=256,data=new Uint8Array(tw*th*4);for(let i=0;i<data.length;i++)data[i]=Math.floor(Math.random()*256);
-const tex=gl.createTexture();gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,tex);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,tw,th,0,gl.RGBA,gl.UNSIGNED_BYTE,data);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.REPEAT);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
-const uRes=gl.getUniformLocation(prog,'iResolution'),uTime=gl.getUniformLocation(prog,'iTime'),uTex=gl.getUniformLocation(prog,'iChannel0');gl.uniform1i(uTex,0);
-function resize(){const dpr=Math.max(1,Math.min(2,devicePixelRatio||1)),w=Math.floor(canvas.clientWidth*dpr),h=Math.floor(canvas.clientHeight*dpr);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}gl.viewport(0,0,w,h);gl.uniform2f(uRes,w,h)}
-addEventListener('resize',resize,{passive:true});resize();let raf=0,t0=performance.now();
-function draw(){gl.uniform1f(uTime,(performance.now()-t0)/1000);gl.drawArrays(gl.TRIANGLES,0,6);raf=requestAnimationFrame(draw)}draw();
-addEventListener('beforeunload',()=>cancelAnimationFrame(raf));
-})();
 </script>
-<script>
-/* Small lunar display retained as the visual accent above the login form. */
-(function(){
-const canvas=document.getElementById('moon-canvas');if(!canvas||!window.THREE)return;
-})();
-</script>
-{% if error %}<script>window.scrollTo({top:document.getElementById('login').offsetTop,behavior:'instant'});</script>{% endif %}
 
-<script>
-/* ATC shader background — standalone WebGL2 adaptation of the supplied component. */
-(function(){
-const canvas=document.getElementById('atc-background');if(!canvas)return;
-const gl=canvas.getContext('webgl2',{premultipliedAlpha:false,antialias:false});if(!gl)return;
-const vertSrc=`#version 300 es
-precision highp float;
-layout(location=0) in vec2 a_pos;
-void main(){gl_Position=vec4(a_pos,0.0,1.0);}`;
-const fragSrc=`#version 300 es
-precision highp float;
-out vec4 fragColor;
-uniform vec2 u_res;
-uniform float u_time;
-float tanh1(float x){float e=exp(2.0*x);return(e-1.0)/(e+1.0);}
-vec4 tanh4(vec4 v){return vec4(tanh1(v.x),tanh1(v.y),tanh1(v.z),tanh1(v.w));}
-void main(){
-vec3 FC=vec3(gl_FragCoord.xy,0.0);vec3 r=vec3(u_res,max(u_res.x,u_res.y));float t=u_time;
-vec4 o=vec4(0.0);vec3 p=vec3(0.0);vec3 v=vec3(1.0,2.0,6.0);float i=0.0,z=1.0,d=1.0,f=1.0;
-for(;i++<5e1;o.rgb+=(cos((p.x+z+v)*0.1)+1.0)/d/f/z){
-p=z*normalize(FC*2.0-r.xyy);
-vec4 m=cos((p+sin(p)).y*0.4+vec4(0.0,33.0,11.0,0.0));
-p.xz=mat2(m)*p.xz;p.x+=t/0.55;
-z+=(d=length(cos(p/v)*v+v.zxx/7.0)/(f=2.0+d/exp(p.y*0.2)));
-}
-o=tanh4(0.2*o);o.a=1.0;fragColor=o;}`;
-function compile(type,src){const sh=gl.createShader(type);gl.shaderSource(sh,src);gl.compileShader(sh);if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(sh)||'compile error');return sh}
-const prog=gl.createProgram();gl.attachShader(prog,compile(gl.VERTEX_SHADER,vertSrc));gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,fragSrc));gl.linkProgram(prog);if(!gl.getProgramParameter(prog,gl.LINK_STATUS))return;
-gl.useProgram(prog);
-const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
-const uRes=gl.getUniformLocation(prog,'u_res'),uTime=gl.getUniformLocation(prog,'u_time');
-function resize(){const dpr=Math.max(1,Math.min(2,devicePixelRatio||1)),w=Math.max(1,Math.floor(innerWidth*dpr)),h=Math.max(1,Math.floor(innerHeight*dpr));if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}gl.viewport(0,0,w,h);gl.uniform2f(uRes,w,h)}
-addEventListener('resize',resize,{passive:true});resize();let raf=0,t0=performance.now();
-function draw(){if(document.hidden){raf=0;return}gl.uniform1f(uTime,(performance.now()-t0)/1000);gl.drawArrays(gl.TRIANGLES,0,6);raf=requestAnimationFrame(draw)}draw();
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!raf)draw()});
-})();
-</script>
-</body></html>"""
-
+</body>
+</html>"""
 
 
 DATA_FILE = "data_v2.json"
@@ -709,7 +518,7 @@ button,input,textarea{font:inherit}.shell{display:flex;min-height:100vh}
 body{background:radial-gradient(circle at 70% -10%,#24475b2b,transparent 35%),repeating-linear-gradient(125deg,#ffffff03 0 2px,transparent 2px 7px),linear-gradient(135deg,#050609,#0a1117)!important}
 .sidebar{width:205px!important;background:linear-gradient(180deg,#17171a,#0b0d11 60%,#171014)!important;border-right:1px solid #5b5157!important;box-shadow:10px 0 35px #0009!important}
 .brand{padding:10px 8px 26px!important}.brand-mark{background:linear-gradient(145deg,#606a73,#161c22)!important;border:1px solid #c4a96c!important;color:#e6d7ad!important;box-shadow:0 0 24px #000!important}.brand-name{color:#d4b56e!important;font-size:18px!important}.brand-sub{color:#9ba3a9!important}
-.nav-item{border-radius:7px!important;color:#9ba3aa!important}.nav-item:hover,.nav-item.active{background:linear-gradient(90deg,#7f123022,#b9975b0d)!important;border-color:#a9874e55!important;color:#f0e2c4!important}.nav-icon{color:#c5a868!important}.nav-icon img{width:100%;height:100%;display:block;object-fit:contain;pointer-events:none}
+.nav-item{border-radius:7px!important;color:#9ba3aa!important}.nav-item:hover,.nav-item.active{background:linear-gradient(90deg,#7f123022,#b9975b0d)!important;border-color:#a9874e55!important;color:#f0e2c4!important}.nav-icon{color:#c5a868!important}
 .main{margin-left:205px!important;padding:22px 28px 34px!important}.top-title h1{font-family:'Share Tech Mono'!important;letter-spacing:3px!important;color:#dfc27c!important}.top-title p{color:#909aa2!important}.system-pill{border-color:#4d6c78!important;background:#07131a!important;color:#59d9a4!important}.btn-add,.btn-save{background:linear-gradient(135deg,#72102c,#9f1c3f)!important;border-color:#c7a96a!important;box-shadow:0 7px 20px #7d173633!important}.btn-fetch,.btn-logs,.btn-edit{border-color:#a9874e66!important;color:#dfc991!important;background:#151a1f!important}.stat-card,.acc-card,.tg-card,.tg-bot,.mini-panel,.form-section{background:linear-gradient(145deg,#151e26f7,#090e13f7)!important;border-color:#45515b!important;box-shadow:0 15px 40px #0008,inset 0 1px #fff1!important}.stat-card,.acc-card,.tg-card,.tg-bot,.form-section{border-radius:13px!important}.stat-icon{background:#b9975b14!important;border-color:#b9975b55!important;color:#e1ca90!important}.acc-header{background:linear-gradient(90deg,#111920,#0a0f14)!important;border-bottom:1px solid #44515a!important}.acc-name{color:#ead6a8!important;text-shadow:0 0 10px #b9975b44!important}.gc-pill{color:#d5bd83!important;background:#8b123514!important;border-color:#b9975b44!important}.last-action{color:#7e8b94!important}.modal{background:#0d1319!important;border-color:#9a7c47!important}.modal-title{color:#e2c783!important}.form-section-title{color:#d1b46f!important}.gc-item:hover,.gc-item.selected{border-color:#9a7c47!important;background:#24141b!important}
 @media(max-width:760px){.sidebar{width:58px!important}.main{margin-left:58px!important;width:calc(100% - 58px)!important}}
 
@@ -741,155 +550,16 @@ button:active{transform:translateY(1px)}
 @media(max-width:760px){.acc-header{padding:13px!important;min-height:60px!important}.acc-name{font-size:22px!important}}
 /* CLASSY INSTAGRAM NAV / DASHBOARD */
 .sidebar{width:178px!important;background:linear-gradient(180deg,#151416,#0b0c0f 65%,#171116)!important;border-right:1px solid #4b443d!important;box-shadow:12px 0 40px #0009!important}.brand{padding:12px 8px 30px!important}.brand-mark{background:linear-gradient(145deg,#6f6870,#17191d)!important;border:1px solid #c4a96c!important;color:#ead8a6!important;box-shadow:0 8px 25px #000!important}.brand-name{color:#d8bb78!important;letter-spacing:1.5px!important}.brand-sub{color:#8f9296!important}.nav{gap:8px!important}.nav-item{padding:13px 12px!important;border-radius:10px!important;color:#989da3!important}.nav-item:hover,.nav-item.active{background:linear-gradient(90deg,#7b173022,#c09d5a10)!important;border-color:#b9975b55!important;color:#f1dfb9!important}.nav-icon{color:#c5a868!important}.main{margin-left:178px!important;padding:26px 30px 40px!important}.topbar{padding:14px 0 18px!important;border-bottom:1px solid #3b3f45!important}.top-title h1{font-family:'Playfair Display',serif!important;color:#e2c783!important;letter-spacing:2px!important;font-size:26px!important}.top-title p{letter-spacing:2px!important}.stat-card,.acc-card,.tg-card,.tg-bot,.mini-panel{background:linear-gradient(145deg,#15181d,#0b0e12)!important;border-color:#3d434a!important;border-radius:15px!important;box-shadow:0 18px 45px #0007!important}.btn-add,.btn-save{background:linear-gradient(135deg,#71132f,#9b1b3e)!important;border-color:#c6a667!important}.btn{border-color:#3e454c!important}.btn:hover{border-color:#b9975b!important;box-shadow:0 0 18px #b9975b22!important}@media(max-width:760px){.sidebar{width:58px!important}.main{margin-left:58px!important;width:calc(100% - 58px)!important;padding:16px 12px 28px!important}}
-
-/* ===== PANEL: ATC FULL-SCREEN BACKGROUND + LIQUID GLASS ===== */
-html,body{
-  min-height:100%;
-  background:transparent!important;
-}
-body{
-  overflow-x:hidden;
-  color:#eef2ff;
-}
-
-/* The supplied ATC WebGL shader is the actual page background. */
-#atc-panel-background{
-  position:fixed!important;
-  inset:0!important;
-  width:100vw!important;
-  height:100vh!important;
-  display:block!important;
-  z-index:0!important;
-  background:#000!important;
-  pointer-events:none!important;
-}
-
-/* Very light readability layer — intentionally transparent enough to see ATC. */
-#atc-panel-overlay{
-  position:fixed!important;
-  inset:0!important;
-  z-index:1!important;
-  pointer-events:none!important;
-  background:
-    radial-gradient(circle at 50% 0%,rgba(255,255,255,.055),transparent 42%),
-    linear-gradient(180deg,rgba(0,0,0,.08),rgba(0,0,0,.24));
-}
-
-.shell{
-  position:relative!important;
-  z-index:2!important;
-  background:transparent!important;
-}
-
-/* Remove the old opaque panel background. */
-.main,
-.sidebar{
-  background:transparent!important;
-}
-
-/* Liquid-glass surfaces. */
-.sidebar,
-.topbar,
-.stat-card,
-.acc-card,
-.acc-header,
-.stats-row,
-.gc-row,
-.info-row,
-.last-action,
-.log-panel,
-.empty,
-.mini-panel,
-.modal,
-.form-section,
-.gc-picker,
-.gc-item,
-.btn,
-.search,
-.system-pill{
-  background:rgba(10,14,20,.28)!important;
-  border-color:rgba(255,255,255,.16)!important;
-  box-shadow:
-    0 18px 55px rgba(0,0,0,.25),
-    inset 0 1px 0 rgba(255,255,255,.14),
-    inset 0 -1px 0 rgba(255,255,255,.035)!important;
-  backdrop-filter:blur(20px) saturate(140%)!important;
-  -webkit-backdrop-filter:blur(20px) saturate(140%)!important;
-}
-
-.sidebar{
-  background:rgba(5,8,13,.34)!important;
-  border-right-color:rgba(255,255,255,.13)!important;
-}
-
-.topbar{
-  background:rgba(8,10,16,.22)!important;
-}
-
-.stat-card,
-.acc-card,
-.mini-panel,
-.modal{
-  border-radius:18px!important;
-}
-
-.acc-header{
-  background:rgba(255,255,255,.055)!important;
-}
-
-.stats-row,
-.gc-row,
-.info-row,
-.last-action,
-.log-panel{
-  background:rgba(0,0,0,.13)!important;
-}
-
-.empty{
-  background:rgba(0,0,0,.13)!important;
-}
-
-input,textarea,select,.search{
-  background:rgba(0,0,0,.20)!important;
-  border-color:rgba(255,255,255,.15)!important;
-  backdrop-filter:blur(14px)!important;
-  -webkit-backdrop-filter:blur(14px)!important;
-}
-
-.btn{
-  background:rgba(255,255,255,.055)!important;
-}
-.btn:hover{
-  background:rgba(255,255,255,.11)!important;
-  border-color:rgba(255,255,255,.35)!important;
-}
-.btn-add,.btn-save{
-  background:linear-gradient(135deg,rgba(255,255,255,.20),rgba(255,255,255,.07))!important;
-  border-color:rgba(255,255,255,.40)!important;
-}
-.nav-item.active,.nav-item:hover{
-  background:rgba(255,255,255,.09)!important;
-  border-color:rgba(255,255,255,.16)!important;
-}
-
-.modal-overlay{
-  background:rgba(0,0,0,.38)!important;
-  backdrop-filter:blur(6px)!important;
-  -webkit-backdrop-filter:blur(6px)!important;
-}
-
 </style>
 </head>
 <body>
-<canvas id="atc-panel-background" aria-hidden="true"></canvas>
-<div id="atc-panel-overlay" aria-hidden="true"></div>
 <div class="shell">
 <aside class="sidebar">
   <div class="brand"><div class="brand-mark">S</div><div><div class="brand-name">SINISTERS SX7</div><div class="brand-sub">PANEL</div></div></div>
   <nav class="nav">
-    <a class="nav-item active" href="/"><span class="nav-icon"><img src="https://cdn.21st.dev/assets/mirror/99/9963f31f43cd77b0c28981ba7bac04db749a5749019f554d1afb75225a3e9151.png" alt="" aria-hidden="true"></span><span class="nav-label">Home</span></a>
-    <a class="nav-item" href="/instagram"><span class="nav-icon"><img src="https://cdn.21st.dev/assets/mirror/d5/d558230225bb0dd1897db6c7cf0d03b29506eef8078fe25313c48cd8f72d05ad.png" alt="" aria-hidden="true"></span><span class="nav-label">Instagram</span></a>
-    <a class="nav-item" href="/contact"><span class="nav-icon"><img src="https://cdn.21st.dev/assets/mirror/7b/7bb8671183d2a2bbb8a3858b1971cc5699ba0103673b011590d22f0fa309bb87.png" alt="" aria-hidden="true"></span><span class="nav-label">Contact</span></a>
+    <a class="nav-item active" href="/"><span class="nav-icon">⌂</span><span class="nav-label">Home</span></a>
+    <a class="nav-item" href="/instagram"><span class="nav-icon">◎</span><span class="nav-label">Instagram</span></a>
+    <a class="nav-item" href="/contact"><span class="nav-icon">✉</span><span class="nav-label">Contact</span></a>
   </nav>
   <div class="side-bottom"><div class="side-owner"><strong>SINISTERS SX7</strong>PANEL • v2.0</div></div>
 </aside>
@@ -1449,191 +1119,10 @@ document.getElementById('modal').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
 });
 </script>
-
-<script>
-/* ATC WebGL2 background — adapted directly from the supplied shader component. */
-(function(){
-  const canvas=document.getElementById('atc-panel-background');
-  if(!canvas)return;
-
-  const gl=canvas.getContext('webgl2',{
-    premultipliedAlpha:false,
-    antialias:false
-  });
-  if(!gl)return;
-
-  const vertSrc=`#version 300 es
-  precision highp float;
-  layout(location=0) in vec2 a_pos;
-  void main(){ gl_Position=vec4(a_pos,0.0,1.0); }`;
-
-  const fragSrc=`#version 300 es
-  precision highp float;
-  out vec4 fragColor;
-
-  uniform vec2 u_res;
-  uniform float u_time;
-
-  float tanh1(float x){
-    float e=exp(2.0*x);
-    return(e-1.0)/(e+1.0);
-  }
-  vec4 tanh4(vec4 v){
-    return vec4(tanh1(v.x),tanh1(v.y),tanh1(v.z),tanh1(v.w));
-  }
-
-  void main(){
-    vec3 FC=vec3(gl_FragCoord.xy,0.0);
-    vec3 r=vec3(u_res,max(u_res.x,u_res.y));
-    float t=u_time;
-
-    vec4 o=vec4(0.0);
-    vec3 p=vec3(0.0);
-    vec3 v=vec3(1.0,2.0,6.0);
-    float i=0.0,z=1.0,d=1.0,f=1.0;
-
-    for(;i++<5e1;
-      o.rgb+=(cos((p.x+z+v)*0.1)+1.0)/d/f/z)
-    {
-      p=z*normalize(FC*2.0-r.xyy);
-
-      vec4 m=cos(
-        (p+sin(p)).y*0.4+
-        vec4(0.0,33.0,11.0,0.0)
-      );
-
-      p.xz=mat2(m)*p.xz;
-      p.x+=t/0.55;
-
-      z+=(d=length(cos(p/v)*v+v.zxx/7.0)/
-        (f=2.0+d/exp(p.y*0.2)));
-    }
-
-    o=tanh4(0.2*o);
-    o.a=1.0;
-    fragColor=o;
-  }`;
-
-  function compile(type,src){
-    const sh=gl.createShader(type);
-    gl.shaderSource(sh,src);
-    gl.compileShader(sh);
-    if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS)){
-      console.error(gl.getShaderInfoLog(sh)||'ATC shader compile error');
-      return null;
-    }
-    return sh;
-  }
-
-  const vs=compile(gl.VERTEX_SHADER,vertSrc);
-  const fs=compile(gl.FRAGMENT_SHADER,fragSrc);
-  if(!vs||!fs)return;
-
-  const prog=gl.createProgram();
-  gl.attachShader(prog,vs);
-  gl.attachShader(prog,fs);
-  gl.linkProgram(prog);
-
-  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){
-    console.error(gl.getProgramInfoLog(prog)||'ATC shader link error');
-    return;
-  }
-
-  gl.useProgram(prog);
-
-  const buf=gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
-  gl.bufferData(
-    gl.ARRAY_BUFFER,
-    new Float32Array([
-      -1,-1, 1,-1, -1,1,
-      -1,1, 1,-1, 1,1
-    ]),
-    gl.STATIC_DRAW
-  );
-
-  gl.enableVertexAttribArray(0);
-  gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
-
-  const uRes=gl.getUniformLocation(prog,'u_res');
-  const uTime=gl.getUniformLocation(prog,'u_time');
-
-  function resize(){
-    const dpr=Math.max(1,Math.min(2,window.devicePixelRatio||1));
-    const w=Math.max(1,Math.floor(window.innerWidth*dpr));
-    const h=Math.max(1,Math.floor(window.innerHeight*dpr));
-
-    if(canvas.width!==w||canvas.height!==h){
-      canvas.width=w;
-      canvas.height=h;
-    }
-
-    gl.viewport(0,0,w,h);
-    gl.uniform2f(uRes,w,h);
-  }
-
-  window.addEventListener('resize',resize,{passive:true});
-  resize();
-
-  let raf=0;
-  const t0=performance.now();
-
-  let lastFrame=0;
-  const frameInterval=1000/30;
-
-  function draw(now=performance.now()){
-    if(now-lastFrame >= frameInterval){
-      lastFrame=now;
-      gl.uniform1f(uTime,(now-t0)/1000);
-      gl.clearColor(0,0,0,1);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.drawArrays(gl.TRIANGLES,0,6);
-    }
-    raf=requestAnimationFrame(draw);
-  }
-
-  draw();
-
-  document.addEventListener('visibilitychange',function(){
-    if(document.hidden){
-      cancelAnimationFrame(raf);
-      raf=0;
-    }else if(!raf){
-      draw();
-    }
-  });
-})();
-</script>
-
 </body>
 </html>"""
 
                                                               
-
-def render_login(error=""):
-    return LOGIN_HTML.replace("{{ error }}", str(error))
-
-
-def send_registration_otp(email, username, otp):
-    if not RESEND_API_KEY:
-        raise RuntimeError("RESEND_API_KEY is not configured.")
-
-    resend.api_key = RESEND_API_KEY
-
-    params = {
-        "from": RESEND_FROM,
-        "to": [email],
-        "subject": "SINISTERS SX7 • Registration OTP",
-        "text": (
-            f"Hello {username},\n\n"
-            f"Your SINISTERS SX7 registration OTP is: {otp}\n\n"
-            f"This OTP expires in {OTP_EXPIRY_SECONDS // 60} minutes.\n"
-            "If you did not request this, you can ignore this email.\n\n"
-            "SINISTERS SX7"
-        ),
-    }
-
-    resend.Emails.send(params)
 
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
@@ -1657,107 +1146,50 @@ def login_page():
             with data_lock:
                 d = load_data()
                 user = d.get("users", {}).get(username)
+
             if user and check_password_hash(user.get("password_hash", ""), password):
                 session["panel_logged_in"] = True
                 session["login_role"] = "user"
                 session["login_username"] = username
                 return redirect(url_for("home_page"))
             error = "Invalid username or password"
-    return render_login(error)
 
+    return LOGIN_HTML.replace("{{ error }}", error)
 
-@app.route("/register/request-otp", methods=["POST"])
-def request_registration_otp():
-    payload = request.get_json(silent=True) or {}
-    username = str(payload.get("username") or "").strip()
-    password = str(payload.get("password") or "")
-    email = str(payload.get("email") or "").strip().lower()
+@app.route("/register", methods=["POST"])
+def register_user():
+    username = (request.form.get("username") or "").strip()
+    password = request.form.get("password") or ""
+    masterkey = request.form.get("masterkey") or ""
 
-    if not username or not password or not email:
-        return jsonify({"success": False, "error": "Username, password and email are required"}), 400
+    if not username or not password or not masterkey:
+        return LOGIN_HTML.replace("{{ error }}", "All registration fields are required")
+
+    if masterkey != REGISTRATION_MASTER_KEY:
+        return LOGIN_HTML.replace("{{ error }}", "Invalid master key")
+
     if len(username) < 3 or len(username) > 32:
-        return jsonify({"success": False, "error": "Username must be 3–32 characters"}), 400
-    if len(password) < 6:
-        return jsonify({"success": False, "error": "Password must be at least 6 characters"}), 400
-    if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
-        return jsonify({"success": False, "error": "Enter a valid email address"}), 400
+        return LOGIN_HTML.replace("{{ error }}", "Username must be 3–32 characters")
 
-    with data_lock:
-        d = load_data()
-        if username in d.get("users", {}):
-            return jsonify({"success": False, "error": "Username already exists"}), 409
-        if any(u.get("email", "").lower() == email for u in d.get("users", {}).values()):
-            return jsonify({"success": False, "error": "Email is already registered"}), 409
-
-    session_key = session.get("_registration_key")
-    if not session_key:
-        session_key = secrets.token_urlsafe(24)
-        session["_registration_key"] = session_key
-
-    now = time.time()
-    with otp_lock:
-        previous = pending_registrations.get(session_key)
-        if previous and now - previous.get("sent_at", 0) < OTP_RESEND_SECONDS:
-            wait = int(OTP_RESEND_SECONDS - (now - previous.get("sent_at", 0)))
-            return jsonify({"success": False, "error": f"Please wait {max(1, wait)} seconds before requesting another OTP"}), 429
-        otp = f"{secrets.randbelow(1000000):06d}"
-        pending_registrations[session_key] = {
-            "username": username, "password_hash": generate_password_hash(password), "email": email,
-            "otp": otp, "sent_at": now, "expires_at": now + OTP_EXPIRY_SECONDS
-        }
-
-    try:
-        send_registration_otp(email, username, otp)
-    except Exception as e:
-        with otp_lock:
-            pending_registrations.pop(session_key, None)
-        return jsonify({"success": False, "error": f"Could not send OTP: {e}"}), 500
-
-    return jsonify({"success": True, "message": "OTP sent to your email"})
-
-
-@app.route("/register/verify-otp", methods=["POST"])
-def verify_registration_otp():
-    payload = request.get_json(silent=True) or {}
-    otp = str(payload.get("otp") or "").strip()
-    if not otp.isdigit() or len(otp) != 6:
-        return jsonify({"success": False, "error": "Enter the 6-digit OTP"}), 400
-
-    session_key = session.get("_registration_key")
-    with otp_lock:
-        pending = pending_registrations.get(session_key) if session_key else None
-
-    if not pending:
-        return jsonify({"success": False, "error": "No active OTP. Request a new OTP."}), 400
-    if time.time() > pending["expires_at"]:
-        with otp_lock:
-            pending_registrations.pop(session_key, None)
-        return jsonify({"success": False, "error": "OTP expired. Request a new OTP."}), 400
-    if not secrets.compare_digest(otp, pending["otp"]):
-        return jsonify({"success": False, "error": "Invalid OTP"}), 400
-
-    username, password_hash, email = pending["username"], pending["password_hash"], pending["email"]
-    registered_now = time.time()
     with data_lock:
         d = load_data()
         d.setdefault("users", {})
         if username in d["users"]:
-            return jsonify({"success": False, "error": "Username already exists"}), 409
-        if any(u.get("email", "").lower() == email for u in d["users"].values()):
-            return jsonify({"success": False, "error": "Email is already registered"}), 409
+            return LOGIN_HTML.replace("{{ error }}", "Username already exists")
+        # Permanent registration timestamp: this is created ONCE and is never
+        # changed by login, logout, password reset, or panel refresh.
+        # Permanent user uptime anchor.
+        # This timestamp is created once at successful registration and is
+        # never changed by login, logout, password reset, or panel refresh.
+        registered_now = time.time()
         d["users"][username] = {
-            "password_hash": password_hash,
-            "email": email,
+            "password_hash": generate_password_hash(password),
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(registered_now)),
             "created_at_epoch": registered_now
         }
         save_data(d)
 
-    with otp_lock:
-        pending_registrations.pop(session_key, None)
-    session.pop("_registration_key", None)
-    return jsonify({"success": True, "message": "Registration successful — you can now log in"})
-
+    return LOGIN_HTML.replace("{{ error }}", "Registration successful — you can now log in")
 
 @app.route("/api/admin/users/<path:username>", methods=["DELETE"])
 @admin_required
@@ -1851,339 +1283,57 @@ HOME_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SINISTERS SX7 • Home</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Instrument+Serif:ital@0;1&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;min-height:100%;background:#09090b;color:#fff;font-family:Inter,system-ui,sans-serif}
-body{overflow-x:hidden}
-.hero-page{position:relative;min-height:100vh;overflow:hidden;background:#09090b}
-.hero-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;filter:saturate(.8) brightness(.72)}
-.hero-page:after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.22),rgba(0,0,0,.18) 42%,rgba(0,0,0,.72)),radial-gradient(circle at 50% 42%,transparent 0%,rgba(0,0,0,.35) 75%);pointer-events:none}
-.content{position:relative;z-index:2;min-height:100vh}
-.header{position:relative;padding:16px 24px;z-index:10}
-.header-inner{max-width:1450px;margin:auto;display:flex;align-items:center;justify-content:space-between;gap:20px}
-.brand{width:100px;height:40px;display:flex;align-items:center;justify-content:center;text-decoration:none;color:#fff;font:800 13px 'Share Tech Mono';letter-spacing:1.5px;border-radius:8px;background:rgba(0,0,0,.22);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(8px)}
-.desktop-nav{display:flex;align-items:center;gap:2px;padding:4px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(16px)}
-.desktop-nav a{color:rgba(255,255,255,.78);text-decoration:none;padding:9px 13px;border-radius:999px;font-size:12px;font-weight:600;transition:.2s}
-.desktop-nav a:hover,.desktop-nav a.active{color:#fff;background:rgba(255,255,255,.08)}
-.cta{display:inline-flex;align-items:center;gap:8px;border:0;border-radius:999px;background:#fff;color:#111;padding:10px 15px;text-decoration:none;font-size:12px;font-weight:700;transition:.2s;white-space:nowrap}
-.cta:hover{background:#eee;transform:translateY(-1px)}
-.mobile-toggle{display:none;width:42px;height:42px;border-radius:50%;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.1);color:#fff;backdrop-filter:blur(10px);cursor:pointer}
-.mobile-menu{display:none;position:absolute;right:18px;top:68px;width:220px;padding:8px;border-radius:16px;background:rgba(12,12,15,.92);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(18px);box-shadow:0 25px 80px #000b}
-.mobile-menu.open{display:flex;flex-direction:column}
-.mobile-menu a{padding:12px 13px;color:#ddd;text-decoration:none;border-radius:10px;font-size:12px}
-.mobile-menu a:hover{background:#ffffff12;color:#fff}
-.main{max-width:1280px;margin:auto;padding:108px 24px 54px}
-.hero-copy{text-align:center;max-width:850px;margin:auto}
-.badge{display:inline-flex;align-items:center;gap:10px;padding:7px 9px;border-radius:999px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(12px);animation:fadeUp .7s ease both}
-.badge-label{background:rgba(255,255,255,.92);color:#171717;border-radius:999px;padding:3px 9px;font-size:10px;font-weight:700}
-.badge-text{font-size:12px;font-weight:600;color:rgba(255,255,255,.88);padding-right:5px}
-h1{margin-top:20px;font:400 clamp(52px,8vw,96px)/.94 'Instrument Serif',Georgia,serif;letter-spacing:-2px;color:#fff;animation:fadeUp .7s .08s ease both;text-shadow:0 4px 35px rgba(0,0,0,.4)}
-h1 em{font-style:italic;color:#fff}
-.description{max-width:690px;margin:24px auto 0;color:rgba(255,255,255,.78);font-size:14px;line-height:1.75;animation:fadeUp .7s .16s ease both}
-.actions{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:32px;animation:fadeUp .7s .24s ease both}
-.primary,.secondary{display:inline-flex;align-items:center;gap:9px;text-decoration:none;border-radius:999px;font-size:12px;font-weight:700;transition:.2s}
-.primary{padding:13px 18px;color:#fff;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(10px)}
-.primary:hover{background:rgba(255,255,255,.17);transform:translateY(-1px)}
-.secondary{padding:13px 5px;color:rgba(255,255,255,.82)}
-.secondary:hover{color:#fff}
-.icon{width:16px;height:16px;display:inline-grid;place-items:center}
-.session{margin:20px auto 0;display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;color:rgba(255,255,255,.65);background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(8px);font:9px 'Share Tech Mono';letter-spacing:1px;animation:fadeUp .7s .3s ease both}
-.session b{color:#fff}
-.dot{width:6px;height:6px;border-radius:50%;background:#6ee7b7;box-shadow:0 0 10px #6ee7b7}
-.lower{max-width:1050px;margin:95px auto 0;text-align:center;animation:fadeUp .8s .35s ease both}
-.lower-title{font-size:12px;color:rgba(255,255,255,.62);letter-spacing:.2px}
-.user-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px}
-.user-card{padding:16px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.2);border-radius:16px;backdrop-filter:blur(12px);text-align:left;display:flex;align-items:center;gap:12px}
-.avatar{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.15);font-weight:800;font-size:12px}
-.uname{font-size:12px;font-weight:700}.urole{font:8px 'Share Tech Mono';color:#9b9b9b;letter-spacing:1px;margin-top:4px}
-.manage{margin-left:auto;display:flex;gap:5px}.manage button{border-radius:999px;padding:7px 9px;background:#ffffff0d;color:#ddd;border:1px solid #ffffff18;font:8px 'Share Tech Mono';cursor:pointer}.manage .delete{color:#ff9a9a;border-color:#ff777733}
-.owner-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px}
-.owner-card{padding:18px;border:1px solid rgba(255,255,255,.1);background:rgba(0,0,0,.18);border-radius:16px;backdrop-filter:blur(10px)}
-.owner-mark{font-size:20px;margin-bottom:7px}.owner-name{font-size:13px;font-weight:700}.owner-role{font:8px 'Share Tech Mono';color:#999;margin-top:4px;letter-spacing:1.5px}
-.empty{padding:22px;color:#aaa;border:1px dashed rgba(255,255,255,.18);border-radius:15px;font:9px 'Share Tech Mono';letter-spacing:1px;margin-top:18px}
-.footer-nav{display:flex;justify-content:center;gap:20px;margin:38px auto 0;padding-bottom:28px}
-.footer-nav a{color:rgba(255,255,255,.58);text-decoration:none;font:9px 'Share Tech Mono';letter-spacing:1px}
-.footer-nav a:hover{color:#fff}
-@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
-@media(max-width:760px){
- .header{padding:13px 15px}.desktop-nav,.header .cta{display:none}.mobile-toggle{display:grid;place-items:center}
- .main{padding:72px 16px 38px}.hero-copy{max-width:520px}
- h1{font-size:57px;letter-spacing:-1px}.description{font-size:13px;margin-top:20px}
- .actions{flex-direction:column;gap:4px;margin-top:27px}.primary{padding:12px 17px}
- .lower{margin-top:70px}.user-grid,.owner-grid{grid-template-columns:1fr}
- .user-card{padding:14px}.manage{margin-left:auto}
-}
-@media(min-width:761px) and (max-width:1050px){.main{padding-top:85px}.user-grid,.owner-grid{grid-template-columns:repeat(2,1fr)}}
+*{box-sizing:border-box;margin:0;padding:0}body{min-height:100vh;background:radial-gradient(circle at 15% 0,#8b123522,transparent 32%),radial-gradient(circle at 90% 100%,#c6a66718,transparent 35%),linear-gradient(135deg,#07080b,#111217 55%,#08090c);color:#eee7da;font-family:Inter,Arial,sans-serif;padding:30px 22px 120px}.page{max-width:1120px;margin:auto}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px}.logo{font:700 23px 'Playfair Display',serif;letter-spacing:2px}.logo span{color:#d0ae67}.logout{color:#d2bc8b;text-decoration:none;border:1px solid #514a40;padding:9px 14px;border-radius:10px;font-size:10px;letter-spacing:1px;background:#101115}.hero{position:relative;overflow:hidden;border:1px solid #4b4541;border-radius:28px;padding:48px;background:linear-gradient(145deg,#17191f,#0d0f13 70%);box-shadow:0 35px 100px #000b}.hero:after{content:"";position:absolute;right:-80px;top:-120px;width:330px;height:330px;border:1px solid #c6a66722;border-radius:50%;box-shadow:0 0 0 35px #c6a66708,0 0 0 70px #c6a66705}.eyebrow{font-size:9px;color:#c9aa6b;letter-spacing:4px;margin-bottom:14px}.hero h1{font:700 clamp(44px,8vw,82px) 'Playfair Display',serif;line-height:.95;letter-spacing:1px}.hero h1 span{color:#b9975b}.hero p{max-width:690px;margin-top:20px;color:#949aa2;line-height:1.8;font-size:12px}.userbar{margin-top:26px;display:inline-flex;gap:9px;align-items:center;border:1px solid #46484c;background:#0b0d10;border-radius:999px;padding:9px 14px;color:#bfc4c9;font-size:10px}.dot{width:7px;height:7px;border-radius:50%;background:#45d58b;box-shadow:0 0 12px #45d58b}.section{margin-top:20px;border:1px solid #3d4147;border-radius:22px;background:linear-gradient(145deg,#14161b,#0b0d11);padding:26px;box-shadow:0 20px 70px #0007}.section-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:18px}.section h2{font:600 25px 'Playfair Display',serif}.section-head small{color:#858b92;font-size:9px;letter-spacing:1.5px}.users{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.user{width:100%;border:1px solid #34383e;background:linear-gradient(145deg,#0b0d10,#111318);border-radius:15px;padding:16px;display:flex;align-items:center;gap:12px;transition:.2s;color:#eee7da;text-align:left;cursor:pointer}.user:hover{transform:translateY(-2px);border-color:#8d7141;box-shadow:0 14px 35px #0008}.manage-arrow{margin-left:auto;font-size:24px;color:#c6a667}.manage-modal{display:none;position:fixed;inset:0;z-index:999;align-items:center;justify-content:center;background:#000b;backdrop-filter:blur(8px)}.manage-modal.open{display:flex}.manage-card{width:min(390px,92vw);padding:24px;border:1px solid #4b4541;border-radius:20px;background:linear-gradient(145deg,#17191f,#0b0d11);box-shadow:0 30px 100px #000}.manage-title{font:700 22px "Playfair Display",serif;color:#e2c783}.manage-sub{margin-top:6px;color:#858b92;font-size:10px}.manage-actions{display:grid;gap:9px;margin-top:22px}.manage-btn{padding:13px;border-radius:10px;cursor:pointer;font-size:10px;font-weight:800;letter-spacing:1px}.manage-reset{border:1px solid #8d7141;background:#17130d;color:#e2c783}.manage-delete{border:1px solid #8b2635;background:#1a0d11;color:#f0808d}.manage-cancel{border:1px solid #3d4147;background:#101216;color:#aeb3b8}.avatar{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(145deg,#74142f,#211419);border:1px solid #a9874e;color:#e4ce98;font-weight:800}.uname{font-weight:700;font-size:12px}.urole{margin-top:4px;color:#747b83;font-size:8px;letter-spacing:1.2px}.user-main{min-width:0}.user-timer{margin-top:7px;color:#c6a667;font:8px 'Share Tech Mono';letter-spacing:.8px}.user-timer span{color:#eee7da;font-weight:700}owner-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.owner{border:1px solid #34383e;background:linear-gradient(145deg,#101216,#0a0c0f);border-radius:15px;padding:20px;text-align:center}.owner-name{font:700 18px 'Playfair Display',serif;color:#e1c888;letter-spacing:1px}.owner-role{margin-top:5px;font-size:8px;color:#777e86;letter-spacing:2px}.empty{text-align:center;color:#737a82;border:1px dashed #353940;border-radius:12px;padding:25px;font-size:10px}.nav{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);width:min(600px,calc(100vw - 30px));display:grid;grid-template-columns:repeat(3,1fr);gap:5px;padding:8px;border:1px solid #4b4743;border-radius:17px;background:#111318f2;backdrop-filter:blur(18px);box-shadow:0 18px 60px #000c}.nav a{padding:12px 8px;text-align:center;text-decoration:none;color:#aeb3b8;border-radius:11px;font-size:10px;font-weight:700;letter-spacing:1px}.nav a:hover,.nav a.active{background:linear-gradient(135deg,#77152f30,#b9975b12);color:#ecd8a7}.sym{display:block;font-size:20px;margin-bottom:3px;color:#c6a667}@media(max-width:800px){.users,.owner-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.hero{padding:32px 24px}.users,.owner-grid{grid-template-columns:1fr}.section{padding:20px}.top{align-items:flex-start}.hero h1{font-size:48px}}
 </style>
 </head>
 <body>
-<section class="hero-page">
-<img class="hero-bg" src="https://cdn.21st.dev/assets/mirror/a8/a8cf38f65f7315f95eba8c803c4a80a9d78cb2ea36fbfee49828396e4a0b9737.jpg" alt="">
-<div class="content">
-<header class="header">
- <div class="header-inner">
-  <a class="brand" href="/">SX⁷</a>
-  <nav class="desktop-nav">
-   <a class="active" href="/">HOME</a>
-   <a href="/instagram">INSTAGRAM</a>
-   <a href="/contact">CONTACT</a>
-  </nav>
-  <a class="cta" href="/logout">LOG OUT ↗</a>
-  <button class="mobile-toggle" onclick="toggleMenu()" aria-label="Open menu">☰</button>
-  <div id="mobileMenu" class="mobile-menu">
-   <a href="/">HOME</a>
-   <a href="/instagram">INSTAGRAM</a>
-   <a href="/contact">CONTACT</a>
-   <a href="/logout">LOG OUT</a>
-  </div>
- </div>
-</header>
-
-<main class="main">
- <div class="hero-copy">
-  <div class="badge"><span class="badge-label">{% if login_role == 'admin' %}ADMIN{% else %}PRIVATE{% endif %}</span><span class="badge-text">SINISTERS SX⁷ CONTROL CENTER</span></div>
-  <h1>Welcome to<br><em>SINISTERS SX⁷</em></h1>
-  <p class="description">{% if login_role == 'admin' %}Full administrative control in one place. Manage registered users, access and your connected automation workspace.{% else %}Your private workspace for managing connected Instagram automation. Open your panel and control everything from one place.{% endif %}</p>
-  <div class="actions">
-   <a class="primary" href="/instagram">◎ OPEN INSTAGRAM PANEL <span class="icon">↗</span></a>
-   <a class="secondary" href="/contact">CONTACT <span class="icon">→</span></a>
-  </div>
-  <div class="session"><span class="dot"></span> SESSION ACTIVE • <b>{{ login_username }}</b> • {{ login_role|upper }}</div>
- </div>
-
- {% if login_role == 'admin' %}
- <section class="lower">
-  <div class="lower-title">Registered users • Account management</div>
-  {% if users %}
-  <div class="user-grid">
-   {% for u in users %}
-   <div class="user-card">
-    <div class="avatar">{{ u.name[:1]|upper }}</div>
-    <div>
-     <div class="uname">{{ u.name }}</div>
-     <div class="urole">REGISTERED USER</div>
-    </div>
-    <div class="manage">
-     <form method="POST" action="/api/admin/users/{{ u.name|urlencode }}/reset-form" onsubmit="return confirm('Reset user &quot;{{ u.name|e }}&quot;? This removes all Instagram IDs owned by this user but keeps the account.');">
-      <button type="submit">RESET</button>
-     </form>
-     <form method="POST" action="/api/admin/users/{{ u.name|urlencode }}/delete" onsubmit="return confirm('Delete user &quot;{{ u.name|e }}&quot;? This also removes their Instagram IDs.');">
-      <button class="delete" type="submit">DELETE</button>
-     </form>
-    </div>
-   </div>
-   {% endfor %}
-  </div>
+<div class="page">
+  <div class="top"><div class="logo">⚡ SINISTERS <span>SX7</span></div><a class="logout" href="/logout">LOG OUT</a></div>
+  <section class="hero">
+    <div class="eyebrow">PRIVATE WORKSPACE</div>
+    <h1>SINISTERS <span>SX7</span></h1>
+    <p>Welcome to the SINISTERS . From here you can access the Instagram control panel </p>
+    <div class="userbar"><span class="dot"></span> LOGGED IN AS <b>{{ login_username }}</b> • {{ login_role|upper }}</div>
+  </section>
+  {% if login_role == 'admin' %}
+  <section class="section">
+    <div class="section-head"><h2>Registered Users</h2><small>{{ user_count }} ACCOUNT{% if user_count != 1 %}S{% endif %}</small></div>
+    {% if users %}<div class="users">{% for u in users %}
+      <div class="user admin-user-row">
+        <div class="avatar">{{ u.name[:1]|upper }}</div>
+        <div class="user-main">
+          <div class="uname">{{ u.name }}</div>
+          <div class="urole">REGISTERED USER</div>
+          <div class="user-timer" data-created="{{ u.created_at_epoch }}">REGISTERED • <span>00:00:00</span></div>
+        </div>
+        <div class="admin-user-actions">
+          <form method="POST" action="/api/admin/users/{{ u.name|urlencode }}/reset-form" onsubmit="return confirm('Reset user &quot;{{ u.name|e }}&quot;? This will remove ALL Instagram IDs owned by this user, but keep the user account and registration uptime.');">
+            <button class="manage-btn manage-reset" type="submit">RESET USER</button>
+          </form>
+          <form method="POST" action="/api/admin/users/{{ u.name|urlencode }}/delete" onsubmit="return confirm('Delete registered user &quot;{{ u.name|e }}&quot;? This will also remove Instagram IDs owned by this user.');">
+            <button class="manage-btn manage-delete" type="submit">DELETE USER</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}</div>
+    {% else %}<div class="empty">NO REGISTERED USERS YET</div>{% endif %}
+  </section>
   {% else %}
-  <div class="empty">NO REGISTERED USERS YET</div>
+  <section class="section">
+    <div class="section-head"><h2>Owners</h2><small>OFFICIAL TEAM</small></div>
+    <div class="owner-grid">{% for name in owners %}<div class="owner"><div class="owner-name">{{ name }}</div><div class="owner-role">OWNER</div></div>{% endfor %}</div>
+  </section>
   {% endif %}
- </section>
- {% else %}
- <section class="lower">
-  <div class="lower-title">Workspace • Your available tools</div>
-  <div class="owner-grid">
-   {% for name in owners %}
-   <div class="owner-card"><div class="owner-mark">✦</div><div class="owner-name">{{ name }}</div><div class="owner-role">OFFICIAL OWNER</div></div>
-   {% endfor %}
-  </div>
- </section>
- {% endif %}
-
- <div class="footer-nav">
-  <a href="/">⌂ HOME</a>
-  <a href="/instagram">◎ INSTAGRAM</a>
-  <a href="/contact">✉ CONTACT</a>
- </div>
-</main>
-</div>
-</section>
-<script>
-function toggleMenu(){document.getElementById('mobileMenu').classList.toggle('open')}
-document.addEventListener('click',function(e){
- const menu=document.getElementById('mobileMenu'),btn=document.querySelector('.mobile-toggle');
- if(menu.classList.contains('open') && !menu.contains(e.target) && !btn.contains(e.target)) menu.classList.remove('open');
-});
-</script>
-</body>
-</html>"""
-
-
-
-PARALLAX_INSTAGRAM_HTML = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>SINISTERS SX7 • Instagram</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Instrument+Serif:ital@0;1&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-html{scroll-behavior:auto;background:#050608}
-body{min-height:100%;background:#050608;color:#f4efe5;font-family:Inter,system-ui,sans-serif;overflow-x:hidden}
-a{color:inherit}
-.parallax{position:relative;background:#050608}
-.parallax__header{height:100svh;min-height:680px;position:relative;overflow:hidden}
-.parallax__visuals{position:absolute;inset:0;overflow:hidden;background:#050608}
-.parallax__black-line-overflow{position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.12),rgba(0,0,0,.2) 45%,rgba(0,0,0,.8));z-index:8;pointer-events:none}
-.parallax__layers{position:absolute;inset:-12%;overflow:hidden}
-.parallax__layer-img{position:absolute;width:100%;height:100%;object-fit:cover;object-position:center;will-change:transform;user-select:none}
-.parallax__layer-img:nth-child(1){filter:saturate(.75) brightness(.7);transform:scale(1.08)}
-.parallax__layer-img:nth-child(2){filter:saturate(.7) brightness(.78);mix-blend-mode:screen;opacity:.55}
-.parallax__layer-title{position:absolute;inset:0;display:grid;place-items:center;z-index:4;will-change:transform}
-.parallax__title{font:400 clamp(64px,12vw,170px)/.85 'Instrument Serif',Georgia,serif;letter-spacing:-5px;color:#fff;text-shadow:0 8px 50px #000;will-change:transform}
-.parallax__layer-img[data-parallax-layer="4"]{filter:saturate(.8) brightness(.65);z-index:5}
-.parallax__fade{position:absolute;left:0;right:0;bottom:0;height:34%;z-index:9;background:linear-gradient(transparent,#050608);pointer-events:none}
-.parallax__topbar{position:absolute;top:0;left:0;right:0;z-index:20;padding:18px 22px}
-.parallax__topbar-inner{max-width:1400px;margin:auto;display:flex;align-items:center;justify-content:space-between;gap:16px}
-.parallax__logo{font:800 13px 'Share Tech Mono';letter-spacing:2px;text-decoration:none;border:1px solid #ffffff22;background:#0005;backdrop-filter:blur(12px);border-radius:10px;padding:11px 14px}
-.parallax__nav{display:flex;gap:6px;padding:5px;border:1px solid #ffffff1c;background:#0005;backdrop-filter:blur(14px);border-radius:999px}
-.parallax__nav a{padding:8px 12px;border-radius:999px;text-decoration:none;color:#bbb;font:10px 'Share Tech Mono';letter-spacing:1px}
-.parallax__nav a:hover,.parallax__nav a.active{background:#fff1;color:#fff}
-.parallax__logout{font:10px 'Share Tech Mono';letter-spacing:1px;text-decoration:none;padding:10px 13px;border:1px solid #ffffff2a;border-radius:999px;background:#ffffff0c}
-.parallax__hero-copy{position:absolute;z-index:15;left:50%;top:54%;transform:translate(-50%,-50%);width:min(900px,90vw);text-align:center}
-.parallax__eyebrow{font:10px 'Share Tech Mono';letter-spacing:5px;color:#d6bb7b;margin-bottom:17px}
-.parallax__hero-copy h1{font:400 clamp(48px,8vw,100px)/.92 'Instrument Serif',Georgia,serif;letter-spacing:-2px}
-.parallax__hero-copy h1 em{font-style:italic;color:#d9bf83}
-.parallax__hero-copy p{max-width:650px;margin:20px auto 0;color:#c1c1c1;font-size:13px;line-height:1.8}
-.parallax__actions{display:flex;justify-content:center;gap:10px;margin-top:28px;flex-wrap:wrap}
-.parallax__btn{display:inline-flex;align-items:center;gap:8px;text-decoration:none;border-radius:999px;padding:12px 17px;font-size:11px;font-weight:700;letter-spacing:.5px;transition:.2s}
-.parallax__btn.primary{background:#fff;color:#111}
-.parallax__btn.secondary{background:#ffffff0c;border:1px solid #ffffff25;color:#eee}
-.parallax__btn:hover{transform:translateY(-2px)}
-.parallax__scroll{position:absolute;bottom:28px;left:50%;transform:translateX(-50%);z-index:20;color:#aaa;text-align:center;font:9px 'Share Tech Mono';letter-spacing:3px}
-.parallax__scroll span{display:block;margin-top:9px;font-size:18px;animation:bob 1.7s ease-in-out infinite}
-@keyframes bob{50%{transform:translateY(5px)}}
-.parallax__content{min-height:100vh;padding:120px 22px 100px;position:relative;background:
-radial-gradient(700px 420px at 50% 0,#7b173018,transparent 70%),
-linear-gradient(180deg,#050608,#0a0b0e)}
-.portal{max-width:1100px;margin:auto}
-.portal-head{text-align:center;margin-bottom:48px}
-.portal-kicker{font:10px 'Share Tech Mono';letter-spacing:4px;color:#c5a868}
-.portal-head h2{margin-top:12px;font:400 clamp(40px,6vw,72px)/1 'Instrument Serif',Georgia,serif}
-.portal-head p{margin:14px auto 0;max-width:620px;color:#92979d;font-size:12px;line-height:1.8}
-.portal-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
-.portal-card{position:relative;min-height:280px;padding:28px;border:1px solid #ffffff18;border-radius:22px;background:linear-gradient(145deg,#17191d,#0b0d11);box-shadow:0 25px 70px #0008;overflow:hidden;transition:.25s}
-.portal-card:hover{transform:translateY(-4px);border-color:#b9975b66}
-.portal-card:before{content:"";position:absolute;width:220px;height:220px;right:-80px;top:-80px;border:1px solid #b9975b22;border-radius:50%;box-shadow:0 0 0 35px #b9975b08,0 0 0 70px #b9975b04}
-.portal-icon{font-size:28px;color:#d7bc7b;margin-bottom:24px}
-.portal-card h3{font:400 34px 'Instrument Serif',Georgia,serif}
-.portal-card p{margin-top:10px;color:#8f959c;font-size:11px;line-height:1.7;max-width:430px}
-.portal-link{display:inline-flex;margin-top:25px;padding:10px 14px;border-radius:999px;border:1px solid #ffffff20;background:#ffffff08;text-decoration:none;font:10px 'Share Tech Mono';letter-spacing:1px}
-.portal-link:hover{background:#ffffff12}
-.portal-footer{text-align:center;margin-top:50px;color:#666d73;font:9px 'Share Tech Mono';letter-spacing:2px}
-@media(max-width:700px){
- .parallax__nav{display:none}.parallax__topbar{padding:13px 15px}
- .parallax__hero-copy{top:51%}.parallax__hero-copy p{font-size:12px}
- .parallax__title{font-size:78px}.parallax__scroll{bottom:20px}
- .parallax__content{padding:85px 15px 70px}.portal-grid{grid-template-columns:1fr}
- .portal-card{min-height:240px;padding:24px}
-}
-</style>
-</head>
-<body>
-<div class="parallax" id="parallax-root">
-<section class="parallax__header">
-  <div class="parallax__visuals">
-    <div class="parallax__layers" data-parallax-layers>
-      <img src="https://cdn.21st.dev/assets/mirror/a4/a43f4eae3459c461345ee676f12d6e1ddca65e8a5279a5af00d475b17ff83aea.webp" loading="eager" data-parallax-layer="1" alt="" class="parallax__layer-img"/>
-      <img src="https://cdn.21st.dev/assets/mirror/50/50ca6a0d36d2780bfcb469d6db7eaec0be7e0d2961ba69a63d2a1473b040338d.webp" loading="eager" data-parallax-layer="2" alt="" class="parallax__layer-img"/>
-      <div data-parallax-layer="3" class="parallax__layer-title"><h2 class="parallax__title">SINISTERS</h2></div>
-      <img src="https://cdn.21st.dev/assets/mirror/e1/e1c8137b5f971c3b3ec1a0f9e79b9c17018767005f844a10082b890472afecfb.webp" loading="eager" data-parallax-layer="4" alt="" class="parallax__layer-img"/>
-    </div>
-    <div class="parallax__black-line-overflow"></div>
-    <div class="parallax__fade"></div>
-  </div>
-
-  <header class="parallax__topbar">
-    <div class="parallax__topbar-inner">
-      <a class="parallax__logo" href="/">SX⁷</a>
-      <nav class="parallax__nav">
-        <a href="/">HOME</a>
-        <a href="#portal" class="active">INSTAGRAM</a>
-        <a href="#contact-card">CONTACT</a>
-      </nav>
-      <a class="parallax__logout" href="/logout">LOG OUT ↗</a>
-    </div>
-  </header>
-
-  <div class="parallax__hero-copy">
-    <div class="parallax__eyebrow">SINISTERS SX⁷ • INSTAGRAM WORKSPACE</div>
-    <h1>Enter the <em>Instagram</em> workspace.</h1>
-    <p>Move through the layers, then continue below to open your existing Instagram panel or reach the contact page.</p>
-    <div class="parallax__actions">
-      <a class="parallax__btn primary" href="/panel">◎ OPEN PANEL ↗</a>
-      <a class="parallax__btn secondary" href="#portal">SCROLL TO CONTINUE ↓</a>
-    </div>
-  </div>
-  <div class="parallax__scroll">SCROLL DOWN<span>↓</span></div>
-</section>
-
-<section class="parallax__content" id="portal">
-  <div class="portal">
-    <div class="portal-head">
-      <div class="portal-kicker">NEXT</div>
-      <h2>Your workspace</h2>
-      <p>The original panel and contact page remain separate, but are now reached naturally after the parallax introduction.</p>
-    </div>
-    <div class="portal-grid">
-      <article class="portal-card">
-        <div class="portal-icon">◎</div>
-        <h3>Instagram Panel</h3>
-        <p>Open the existing Instagram dashboard without changing its account, bot, group, message, rename, or API functionality.</p>
-        <a class="portal-link" href="/panel">OPEN INSTAGRAM PANEL ↗</a>
-      </article>
-      <article class="portal-card" id="contact-card">
-        <div class="portal-icon">✉</div>
-        <h3>Contact</h3>
-        <p>Need help or want to reach SINISTERS SX7? Continue to the existing contact page.</p>
-        <a class="portal-link" href="/contact">OPEN CONTACT ↗</a>
-      </article>
-    </div>
-    <div class="portal-footer">SINISTERS SX⁷ • {{ login_username|e }} • {{ login_role|upper }}</div>
-  </div>
-</section>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@studio-freight/lenis@1.0.42/bundled/lenis.min.js"></script>
-<script>
-(function(){
-  const root=document.getElementById('parallax-root');
-  if(!root || !window.gsap) return;
-  gsap.registerPlugin(ScrollTrigger);
-
-  const trigger=root.querySelector('[data-parallax-layers]');
-  if(trigger){
-    const tl=gsap.timeline({
-      scrollTrigger:{trigger:trigger,start:"0% 0%",end:"100% 0%",scrub:0}
-    });
-    [
-      {layer:"1",yPercent:70},
-      {layer:"2",yPercent:55},
-      {layer:"3",yPercent:40},
-      {layer:"4",yPercent:10}
-    ].forEach((obj,i)=>{
-      tl.to(trigger.querySelectorAll('[data-parallax-layer="'+obj.layer+'"]'),
-        {yPercent:obj.yPercent,ease:"none"},i===0?undefined:"<");
-    });
-  }
-
-  if(window.Lenis){
-    const lenis=new Lenis({smoothWheel:true});
-    lenis.on('scroll',ScrollTrigger.update);
-    gsap.ticker.add(time=>lenis.raf(time*1000));
-    gsap.ticker.lagSmoothing(0);
-    window.addEventListener('beforeunload',()=>lenis.destroy());
-  }
-})();
-</script>
+<nav class="nav"><a class="active" href="/"><span class="sym">⌂</span>HOME</a><a href="/instagram"><span class="sym">◎</span>INSTAGRAM</a><a href="/contact"><span class="sym">✉</span>CONTACT</a></nav>
 </body>
-</html>"""
 
+</html>"""
 
 CONTACT_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -2276,11 +1426,7 @@ def panel_page():
 @app.route("/instagram")
 @login_required
 def instagram_panel():
-    return render_template_string(
-        PARALLAX_INSTAGRAM_HTML,
-        login_username=session.get("login_username", ""),
-        login_role=session.get("login_role", "user")
-    )
+    return redirect(url_for("panel_page"))
 
 @app.route("/api/accounts")
 @login_required
@@ -2486,95 +1632,38 @@ def all_status():
 @app.route("/api/fetch-groups", methods=["POST"])
 @login_required
 def fetch_groups():
-    body = request.json or {}
-
+    body = request.json
     session_id = (body.get("session_id") or "").strip()
     acc_id = (body.get("acc_id") or "fetch_temp").strip()
-    proxy = (body.get("proxy") or "").strip() or None
-
     if not session_id:
-        return jsonify({
-            "success": False,
-            "error": "Session ID required"
-        }), 400
-
+        return jsonify({"success": False, "error": "Session ID required"}), 400
     try:
-        # ---------------------------------------------------------
-        # IMPORTANT:
-        # fetch_temp must NEVER reuse a previously cached client.
-        # This ensures every new Session ID gets its own login.
-        # ---------------------------------------------------------
-        if acc_id == "fetch_temp":
-
-            # Remove any stale temporary client from memory
-            old_client = ig_clients.pop("fetch_temp", None)
-
-            # Create a completely fresh Instagrapi client
+                                                                
+        proxy = (body.get("proxy") or "").strip() or None
+        if acc_id in ig_clients:
+            cl = ig_clients[acc_id]
+        elif acc_id != "fetch_temp":
+            cl = get_client(acc_id, session_id, proxy)
+        else:
             cl = Client()
-
             if proxy:
                 cl.set_proxy(proxy)
-
-            # Login using THIS session ID
-            cl.login_by_sessionid(
-                decode_session(session_id)
-            )
-
-        else:
-            # Existing saved account: use the normal client cache
-            if acc_id in ig_clients:
-                cl = ig_clients[acc_id]
-            else:
-                cl = get_client(
-                    acc_id,
-                    session_id,
-                    proxy
-                )
-
-        # ---------------------------------------------------------
-        # Fetch Instagram DM threads
-        # ---------------------------------------------------------
+            cl.login_by_sessionid(decode_session(session_id))
+            ig_clients[acc_id] = cl
         threads = cl.direct_threads(amount=50)
-
-        # Keep only group conversations
         groups = []
-
         for t in threads:
             if t.is_group:
-                groups.append({
-                    "id": str(t.id),
-                    "name": t.thread_title or str(t.id)
-                })
-
-        # Save settings only for permanent accounts.
-        # Do NOT save the temporary fetch client.
-        if acc_id != "fetch_temp":
-            try:
-                persist_client_settings(
-                    acc_id,
-                    cl
-                )
-            except Exception:
-                pass
-
-        return jsonify({
-            "success": True,
-            "groups": groups
-        })
-
+                groups.append({"id": str(t.id), "name": t.thread_title or str(t.id)})
+        try:
+            if acc_id in ig_clients:
+                persist_client_settings(acc_id, ig_clients[acc_id])
+        except Exception:
+            pass
+        return jsonify({"success": True, "groups": groups})
     except Exception as e:
-
-        # Make sure a failed temporary fetch cannot
-        # leave an old client behind.
-        if acc_id == "fetch_temp":
-            ig_clients.pop("fetch_temp", None)
-        else:
-            ig_clients.pop(acc_id, None)
-
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 400
+        ig_clients.pop(acc_id, None)                    
+        return jsonify({"success": False, "error": str(e)}), 400
 
                                            
 SELF_URL = (os.getenv("SELF_URL") or os.getenv("PUBLIC_URL") or "").strip()
